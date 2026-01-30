@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from jaxtyping import Integer, Float
 from typing import Any, Optional
+import datetime
 
 from torch import Tensor, nn
 from tqdm import tqdm
@@ -13,7 +14,7 @@ import wandb
 
 from cs336_basics.optimizer import AdamW, cross_entropy, gradient_clipping
 from cs336_basics.modules import TransformerLM, softmax
-from cs336_basics.stupidargsmain import main
+# from cs336_basics.stupidargsmain import main
 from cs336_basics.tokenizer import train_bpt_tokenizer, Tokenizer
 
 
@@ -56,18 +57,8 @@ def load_checkpoint(src: str|os.PathLike|typing.BinaryIO|typing.IO[bytes],
     optimizer.load_state_dict(obj['optimizer'])
     return obj['iteration']
 
-def train(model_args: dict[str, Any],
-          optimizer_args: dict[str, Any],
-          train_file,
-          num_steps: int,
-          device: str,
-          wandb_entity: str,
-          wandb_project: str,
-          checkpoint_args: Optional[dict[str, Any]]=None):
-
-    # Model arguments
+def _get_model_from_args(model_args: dict[str, Any], device):
     vocab_size = model_args.get('vocab_size', 1000)
-    batch_size = model_args.get('batch_size', 8)
     context_length = model_args.get('context_length', 250)
     num_layers = model_args.get('num_layers', 2)
     d_model = model_args.get('d_model', 128)
@@ -75,35 +66,67 @@ def train(model_args: dict[str, Any],
     rope_theta = model_args.get('rope_theta', 10000)
     d_ff = model_args.get('d_ff', 4*d_model)
 
+    return TransformerLM(d_model, num_heads, d_ff, vocab_size, context_length, num_layers, rope_theta, device)
+
+def _get_optimizer_from_args(model: nn.Module, optimizer_args: dict[str, Any]):
     betas = optimizer_args.get('betas', (0.9, 0.999))
     learning_rate = optimizer_args.get('learning_rate', 1e-4)
     weight_decay = optimizer_args.get('weight_decay', 0.01)
 
-    checkpoint_path = checkpoint_args.get('path', './checkpoints')
-    checkpoint_rate = checkpoint_args.get('rate', num_steps//2)
+    return AdamW(model.parameters(), learning_rate, weight_decay, betas)
 
-    trainset = np.load(train_file, mmap_mode='r')
-    model = TransformerLM(d_model, num_heads, d_ff, vocab_size, context_length, num_layers, rope_theta, device)
-    optimizer = AdamW(model.parameters(), learning_rate, weight_decay, betas)
-
+def _wandb_setup(wandb_entity: str,
+                wandb_project: str,
+                model_args: dict[str, Any],
+                optimizer_args: dict[str, Any],
+                num_steps: int,
+                tf_name: str):
+    
     wandb.login()
-    run = wandb.init(
+    return wandb.init(
         entity=wandb_entity,# Set the wandb entity where your project will be logged (generally your team name).
         project=wandb_project,# Set the wandb project where this run will be logged.
         config={
             "num_steps": num_steps,
+            "train_file": tf_name,
             **model_args,
             **optimizer_args
         },
     )
 
+def train(model_args: dict[str, Any],
+          optimizer_args: dict[str, Any],
+          train_file,
+          num_steps: int,
+          device: str,
+          wandb_entity: str,
+          wandb_project: str,
+          checkpoint_args: dict[str, Any]):
+
+    # TODO: warning, default context length and learning rate must be the same in here and the get from args methods
+    model_name = model_args.get('name', 'default_model' + str(datetime.datetime.now()))
+    batch_size = model_args.get('batch_size', 8)
+    context_length = model_args.get('context_length', 250)
+    learning_rate = optimizer_args.get('learning_rate', 1e-4)
+
+    checkpoint_path = checkpoint_args.get('path', f'./{model_name}_checkpoints')
+    if not os.path.exists(checkpoint_path):  
+        os.mkdir(checkpoint_path) 
+    checkpoint_rate = checkpoint_args.get('rate', num_steps//2)
+
+    trainset = np.load(train_file, mmap_mode='r')
+    model = _get_model_from_args(model_args, device)
+    optimizer = _get_optimizer_from_args(model, optimizer_args)
+
+    run = _wandb_setup(wandb_entity, wandb_project, model_args, optimizer_args, num_steps, train_file)
+
     num_periods = 8
     steps_per_period = num_steps//num_periods
-
     start_time = time.time()
-
     for period in range(num_periods):
-        for step in tqdm(range(steps_per_period), desc=f"Period {period + 1}/{num_periods} - [{period*steps_per_period + 1}, {(period+1)*steps_per_period}]/{num_steps}"):
+        for step in tqdm(range(steps_per_period), 
+                         desc=f"Period {period + 1}/{num_periods} - [{period*steps_per_period + 1}, {(period+1)*steps_per_period}]/{num_steps}"):
+            
             inputs, targets = data_loader(trainset, batch_size, context_length, device=device)
             current_lr = learning_rate # learning_rate_schedule(step, alpha_min=0, alpha_max=0.1, Tc=10, Tw=80)
 
@@ -117,19 +140,24 @@ def train(model_args: dict[str, Any],
 
             optimizer.step()
 
-            if checkpoint_args is not None and (step + 1) % checkpoint_rate == 0:
-                save_checkpoint(model, optimizer, step, out=os.path.join(checkpoint_path, f"_{step}"))
+            if (period * steps_per_period + step + 1) % checkpoint_rate == 0:
+                print("   Step {step + 1}, saving checkpoint...")
+                save_path = os.path.join(checkpoint_path, model_name + f"_{step}.pt")
+                save_checkpoint(model, optimizer, step, out=save_path)
 
             run.log({"loss": loss.item(), "learning rate": current_lr, "clock_time": time.time() - start_time})
 
         print(f"Step {(period+1)*steps_per_period}/{num_steps} ~ Loss {loss.item():.4f} - LR: {current_lr:.2f} - Time: {time.time() - start_time}")
 
+    save_checkpoint(model, optimizer, step, out=os.path.join(checkpoint_path, model_name + f"_final.pt"))
+
     run.finish()
     print("Training completed!")
     print("Running validation...")
+
     return model
 
-# TODO test this one
+
 def decode(model: nn.Module,
            eot_token: int,
            user_input: Float[Tensor, "seq_len"],
@@ -152,24 +180,48 @@ def decode(model: nn.Module,
 
         next_token = np.random.choice(q_sorted.indices, p=p)
 
-        next_input = torch.cat(next_input, next_token)
+        next_input = torch.cat([next_input, torch.Tensor([next_token])])
 
     return next_input
+
+def set_up_small_test_file(train_file, shortened_train_file, tokenized_short_file, eot_token, vocab_size):
+    with open(train_file, 'r') as f:
+        shortened_train_text = ""
+        while len(shortened_train_text) < 50000:
+            line = f.readline()
+            shortened_train_text += (line + "\n")
+        shortened_train_text = shortened_train_text[:50000] + eot_token
+    
+    with open(shortened_train_file, 'w') as f:
+        f.write(shortened_train_text)
+
+    vocab, merges = train_bpt_tokenizer(shortened_train_file, vocab_size, [eot_token])
+    tokenizer = Tokenizer(vocab, merges, [eot_token])
+    encoded_small_train = np.array(tokenizer.encode(shortened_train_text))
+    np.save(tokenized_short_file, encoded_small_train)
+
+    return tokenizer
 
 
 def small_test():
     train_file = '../data/TinyStoriesV2-GPT4-train.txt'
     shortened_train_file = '../data/TinyStoriesV2-GPT4-train_50k.txt'
+    tokenized_short_file = '../data/tok_TinyStoriesV2-GPT4-train_50k.npy'
+
+    vocab_size = 1000
     eot_token = "<|endoftext|>"
-    with open(train_file, 'r') as f:
-        train_text = f.read()
-        shortened_train_text = train_text[:50000] + eot_token
-    with open(shortened_train_file, 'w') as f:
-        f.write(shortened_train_text)
+
+    file_setup_necessary = False
+    if file_setup_necessary:
+        tokenizer = set_up_small_test_file(train_file, shortened_train_file, tokenized_short_file, eot_token, vocab_size)
+    else:
+        vocab, merges = train_bpt_tokenizer(shortened_train_file, vocab_size, [eot_token])
+        tokenizer = Tokenizer(vocab, merges, [eot_token])
 
     num_steps = 1000
     model_args = {
-        'vocab_size': 1000,
+        'name': 'small_guy',
+        'vocab_size': vocab_size,
         'batch_size': 8,
         'context_length': 250,
         'num_layers': 2,
@@ -179,11 +231,36 @@ def small_test():
         'd_ff': 4 * 128
     }
 
-    vocab, merges = train_bpt_tokenizer(shortened_train_file, 1000, [eot_token])
-    tokenizer = Tokenizer(vio)
-    train(
-        model_args, {},
-    )
+    from_checkpoint = True
+    checkpoint_path = "./small_guy_checkpoints/"
+    checkpoint_rate = num_steps//4
+    if not from_checkpoint:
+        model = train(
+            model_args, 
+            {},
+            tokenized_short_file,
+            num_steps,
+            'cpu',
+            'emibrahimovic-mit',
+            'first-test',
+            {"path": checkpoint_path,
+             "rate": checkpoint_rate}
+        )
+    else:
+        model = _get_model_from_args(model_args, 'cpu')
+        optimizer = _get_optimizer_from_args(model, {})
+        load_checkpoint(os.path.join(checkpoint_path, model_args['name'] + f"_final.pt"), model, optimizer)
+
+    prompt = "Ben is a good boy. Ben likes to eat ice cream. "
+    encoded_prompt = torch.Tensor(tokenizer.encode(prompt))
+
+    encoded_output = decode(model, tokenizer.encode(eot_token)[0], encoded_prompt, 250)
+    words = tokenizer.decode(encoded_output.tolist())
+
+    return words
+    
+
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    small_test()
+    # raise SystemExit(main())
