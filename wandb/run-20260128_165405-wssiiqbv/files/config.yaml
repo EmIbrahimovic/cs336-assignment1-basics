@@ -1,0 +1,41 @@
+_wandb:
+    value:
+        cli_version: 0.21.2
+        e:
+            c19csyeq3096v0ezokrk1sp3lidtx7x2:
+                codePath: cs336_basics/testing.py
+                codePathLocal: cs336_basics/testing.py
+                email: emira@mit.edu
+                executable: /home/em_ibrahimovic/projects/cs336-assignment1-basics/.venv/bin/python3
+                git:
+                    commit: dab605be059838154f0e818715bda29ab3fcb08c
+                    remote: https://github.com/EmIbrahimovic/cs336-assignment1-basics.git
+                host: PONKYGRAM
+                os: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35
+                program: /home/em_ibrahimovic/projects/cs336-assignment1-basics/cs336_basics/testing.py
+                python: CPython 3.11.14
+                root: /home/em_ibrahimovic/projects/cs336-assignment1-basics
+                startedAt: "2026-01-28T15:54:05.549571Z"
+                writerId: c19csyeq3096v0ezokrk1sp3lidtx7x2
+        m: []
+        python_version: 3.11.14
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 2
+                - 16
+            "4": 3.11.14
+            "5": 0.21.2
+            "12": 0.21.2
+            "13": linux-x86_64
+architecture:
+    value: CNN
+dataset:
+    value: CIFAR-100
+epochs:
+    value: 10
+learning_rate:
+    value: 0.02

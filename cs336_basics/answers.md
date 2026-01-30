@@ -65,13 +65,12 @@ Trainable parameters:
 vocab_size * d_model
 = 50,257 × 1,600 = 80,411,200
 
-num_layers * (d_model*num_heads*(2*d_k + d_v) + 2*d_model + 3*d_model*d_ff)
-    d_model*num_heads*(2*d_k + d_v) = 1,600 × 25 × (2×64 + 64) = 1,600 × 25 × 192 = 7,680,000
-    2*d_model = 2 × 1,600 = 3,200
-    3*d_model*d_ff = 3 × 1,600 × 6,400 = 30,720,000
+num_layers * (16* d_model*d_model + 2*d_model)
+    16*d_model^2 = 40960000
+    2*d_model=3200
 
-    Inner sum = 7,680,000 + 3,200 + 30,720,000 = 38,403,200
-    Multiply by num_layers: 48 × 38,403,200 = 1,843,353,600
+    Inner sum = 40,963,200
+    Multiply by num_layers: 48 × 40,963,200 = 1,966,233,600
 
 d_model
 = 1,600
@@ -80,20 +79,20 @@ d_model * vocab_size
 = 1,600 × 50,257 = 80,411,200
 
 =
-2,004,177,600
+2,127,057,600
 ```
 
 
 Bytes assuming single precision:
 ```
-2,004,177,600 parameters × 4 bytes = 8,016,710,400 bytes ≈ 8.02 GB
+2,127,057,600 parameters × 4 bytes = 8,508,230,400 bytes ≈ 7.93 GB
 ```
 
 ## MatMuls and FLOPs
 
 Identify the matrix multiplies required to complete a forward pass of our GPT-2 XL-shaped
 model. How many FLOPs do these matrix multiplies require in total? Assume that our input
-sequence has context_length tokens.
+sequence has context_length token s.
 
 
 Embedding layer: `[vocab_size, d_model]` (trainable params)
@@ -127,40 +126,49 @@ Norm:  `[d_model]` X -> scale and softmax
 Final linear layer: `[d_model, vocab_size]`
 `X W -> (con_len, d_model) (d_model, vocab_size)`
 
+Output = `(con_len, vocab_size)` (not softmaxed, these are logits)
+Or if there's batches `(B, con_len, vocab_size)`
+For each sequence in the batch, for each position it returns a probability distribution. 
+
 FLOPS
 ```
 num_layers * (
-num_heads * con_len * d_model * d_k+
-num_heads * con_len * d_k * con_len + 
-con_len * num_heads * d_k * d_model
+3 * num_heads * con_len * d_model * d_k+ # kqv projections
+num_heads * con_len * d_k * con_len +  # qt k
+con_len * con_len * d_v + # av
+con_len * num_heads * d_k * d_model # output
 +
-2*con_len * d_model*d_ff + con_len * d_ff * d_model
+2*con_len * d_model*d_ff + con_len * d_ff * d_model # ffn
 )
 +
 con_len*d_model*vocab_size
 ```
+
+Simplified
 ```
-num_heads * con_len * d_model * d_k
-    = 25 × 1,024 × 1,600 × 64 = 2,621,440,000
-num_heads * con_len * d_k * con_len
-    = 25 × 1,024 × 64 × 1,024 = 1,677,721,600
-con_len * num_heads * d_k * d_model
-    = 1,024 × 25 × 64 × 1,600 = 2,621,440,000
-2 * con_len * d_model * d_ff
-    = 2 × 1,024 × 1,600 × 6,400 = 20,971,520,000
-con_len * d_ff * d_model
-    = 1,024 × 6,400 × 1,600 = 10,485,760,000
-    Sum of inner terms:
-    2,621,440,000 + 1,677,721,600 + 2,621,440,000 + 20,971,520,000 + 10,485,760,000 = 38,377,881,600
+num_layers * (
+4 * con_len * d_model**2 + 2 * con_len**2 * d_model + # Projections and attention
+12 * con_len * d_model**2 # FFN 
+)
++
+con_len*d_model*vocab_size # Linear for logits
+```
 
-Multiply by num_layers:
-    48 × 38,377,881,600 = 1,842,138,316,800
-Final term: con_len * d_model * vocab_size
-    = 1,024 × 1,600 × 50,257 = 82,341,068,800
+```
+48*
+  (16*1024*1600^2 + 2*1024^2*1600)
++
+1024*1600*50257
+=
+48 * 45,298,483,200 + 82,341,068,800
+=
+2,256,668,262,400
+```
 
-Total:
-1,842,138,316,800 + 82,341,068,800 = 1,924,479,385,600
-The expression evaluates to 1,924,479,385,600 (approximately 1.92 trillion operations/FLOPs for a forward pass).
+```
+within the transformer block:
+  projections are taking up: 13,841,203,200 
+  ffn is taking up 12*con_len * d_model**2 = 31,457,280,000
 ```
 
 One transformer layer is on the same order of magnitude of flops as our final Linear.
@@ -168,5 +176,145 @@ Within the transformer layer the FFN's are eating 60 bil FLOPs.
 
 ## Scaling GPT-2
 
+GPT-2 small (12 layers, 768 d_model, 12 heads), 
+GPT-2 medium (24 layers, 1024 d_model, 16 heads), 
+GPT-2 large (36 layers, 1280 d_model, 20 heads). 
 
+As the model size increases, which parts of the Transformer LM take up proportionally more or less of
+the total FLOPs?
 
+see `calculations.py`
+
+The proportion that goes into the final linear layer decreases from 23% in small to 3% in XL (which makes sense as the
+transformer block block increases).
+As the d_model and num_heads grows the proportion of the transformer block FLOPS that go into the FFN also 
+grows: 64%, 66%, 68%, 69%. The attention projection decreases: 7->5->4->3%
+
+### Scaling context length
+
+Attention gains in the % FLOPS, while the FFN decreases. 69->32%. Attention (projections and the attention matrix) take
+up the rest. 
+
+The final linear layer also decreases from 3 to 1.7% of total parameters.
+
+# Optimizer
+
+## Learning rates
+
+In 100 iters, with lr = 1 on the toy example: 25.52965545654297, quickly drops to 15ish and gets down to 12.160255432128906
+
+In 10 iters with For lr=10.0, in 10 iterations:
+1. 28.936603546142578, 
+2. 3.8889389038085938
+
+For lr=100.0, in 10 iterations:
+1. 22.737520217895508
+2. 1.8321589557736552e-23
+
+For lr=1000.0, in 10 iterations:
+1. 22.729143142700195
+2. 8205.2197265625
+3. 1417170.75
+4. 157645088.0
+5. 12769251328.0
+6. 805886033920.0
+7. 41371557691392.0
+8. 1779981281656832.0
+9. 6.560631264116736e+16
+10. 2.1066917666095104e+18
+
+Yeah, having a more aggressive learning rate 10 or 100 helped us reach smaller losses in 10 interations, but going overboard
+with 1000 led to hella divergence in loss.
+
+## Resource accounting
+
+Let us compute how much memory and compute running AdamW requires. Assume we are using
+float32 for every tensor.
+
+1. How much peak memory does running AdamW require? Decompose your answer based on the
+memory usage of the parameters, activations, gradients, and optimizer state. Express your answer
+in terms of the batch_size and the model hyperparameters (vocab_size, context_length,
+num_layers, d_model, num_heads). Assume d_ff = 4 × d_model.
+
+For simplicity, when calculating memory usage of activations, consider only the following components:
+- Transformer block 
+  - RMSNorm(s)
+  - Multi-head self-attention sublayer: QKV projections, Q⊤K matrix multiply, softmax,
+  weighted sum of values, output projection. 
+  - Position-wise feed-forward: W1 matrix multiply, SiLU, W2 matrix multiply
+- final RMSNorm
+- output embedding
+- cross-entropy on logits
+
+**Deliverable:** An algebraic expression for each of parameters, activations, gradients, and opti-
+mizer state, as well as the total.
+
+```
+Number of parameters: 	2*d_model*vocab_size + d_model + num_layers*(16*d_model**2 + 2*d_model)
+Number of activations: 	batch_size*(2*con_len*d_model + con_len*vocab_size + num_layers*(2*con_len**2*num_heads + 20*con_len*d_model))
+Number of gradients: 	2*d_model*vocab_size + d_model + num_layers*(16*d_model**2 + 2*d_model)
+Number of states: 	4*d_model*vocab_size + 2*d_model + 2*num_layers*(16*d_model**2 + 2*d_model)
+Peak memory during opt: batch_size*(2*con_len*d_model + con_len*vocab_size + num_layers*(2*con_len**2*num_heads + 20*con_len*d_model)) + 8*d_model*vocab_size + 4*d_model + 4*num_layers*(16*d_model**2 + 2*d_model)
+```
+
+Knowing which terms dominate tells us that scaling something in those terms will lead to linear memory cons. increase or 
+quadratic, as is the case with `con_len`. Or technically with `d_model`, but that should not dominate.
+
+2. Instantiate your answer for a GPT-2 XL-shaped model to get an expression that only depends on
+the batch_size. What is the maximum batch size you can use and still fit within 80GB memory?
+
+**Deliverable:** An expression that looks like a · batch_size + b for numerical values a, b, and a
+number representing the maximum batch size.
+
+```
+Parameters: 4 × 2,127,057,600 = 8,508,230,400 bytes ≈ 7.93 GB
+Gradients: 4 × 2,127,057,600 = 8,508,230,400 bytes ≈ 7.93 GB
+AdamW states: 8 × 2,127,057,600 = 17,016,460,800 bytes ≈ 15.86 GB
+Subtotal: 31.72 GB
+
+Activations per batch: 2,572,960,768 × 4 = 10,291,843,072 bytes ≈ 9.59 GB
+```
+
+```
+Total = 31.72 GB + 9.59 × B GB ≤ 80 GB
+9.59 × B ≤ 48.28
+B ≤ 5.03
+```
+
+```
+Peak memory during opt: 4,144,186,368*batch_size + 8,508,230,400
+80GB is 80*1e9 bytes
+1 16bit float is 2 bytes
+max_batch_size= 123014725//16188228 =7
+```
+
+3. How many FLOPs does running one step of AdamW take?
+
+**Deliverable:** An algebraic expression, with a brief justification.
+
+About 20x the number of parameters, meaning: 
+`20 x [2*d_model*vocab_size + d_model + num_layers*(16*d_model**2 + 2*d_model)]`
+
+4. Model FLOPs utilization (MFU) is defined as the ratio of observed throughput (tokens per second)
+relative to the hardware’s theoretical peak FLOP throughput [Chowdhery et al., 2022].
+An NVIDIA A100 GPU has a theoretical peak of 19.5 teraFLOP/s for float32 operations. Assuming
+you are able to get 50% MFU, how long would it take to train a GPT-2 XL for 400K steps and a
+batch size of 1024 on a single A100? Following Kaplan et al. [2020] and Hoffmann et al. [2022],
+assume that the backward pass has twice the FLOPs of the forward pass.
+
+**Deliverable:** The number of days training would take, with a brief justification.
+
+Assuming a computation-bound regime.
+FLOPS = 3x flops for a forward pass.
+2,256,668,262,400 * 3 * 1024 = 6,932,484,902,092,800 6932484902092800
+for 400k passes
+2,772,993,960,837,120,000,000 = 2.773 * 10^21
+
+Time = Total FLOPs / Effective FLOPs_per_second
+     = 2.772 × 10²¹ / 9.75 × 10¹²
+     = 2.843 × 10⁸ seconds
+
+2.843 × 10⁸ seconds / (24 × 3600) = 3,290 days ≈ 9.0 years
+
+Also batch size of 1024 won't fit onto the device: gradient accumulation is necessary to get larger effective batch sizes.
+Distributed training to the rescue to shorten this 9 year count.

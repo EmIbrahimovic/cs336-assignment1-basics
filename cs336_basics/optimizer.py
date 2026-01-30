@@ -61,7 +61,7 @@ class AdamW(torch.optim.Optimizer):
     For each parameter keeps the first and second moment, and applies weight decay independent of the gradient update.
     """
 
-    def __init__(self, params, lr, weight_decay, betas, eps):
+    def __init__(self, params, lr, weight_decay, betas, eps=1e-6):
         if lr < 0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if betas[0] < 0 or betas[1] < 0:

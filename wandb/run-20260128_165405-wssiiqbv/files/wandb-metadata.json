@@ -1,0 +1,17 @@
+{
+  "os": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "python": "CPython 3.11.14",
+  "startedAt": "2026-01-28T15:54:05.549571Z",
+  "program": "/home/em_ibrahimovic/projects/cs336-assignment1-basics/cs336_basics/testing.py",
+  "codePath": "cs336_basics/testing.py",
+  "codePathLocal": "cs336_basics/testing.py",
+  "git": {
+    "remote": "https://github.com/EmIbrahimovic/cs336-assignment1-basics.git",
+    "commit": "dab605be059838154f0e818715bda29ab3fcb08c"
+  },
+  "email": "emira@mit.edu",
+  "root": "/home/em_ibrahimovic/projects/cs336-assignment1-basics",
+  "host": "PONKYGRAM",
+  "executable": "/home/em_ibrahimovic/projects/cs336-assignment1-basics/.venv/bin/python3",
+  "writerId": "c19csyeq3096v0ezokrk1sp3lidtx7x2"
+}

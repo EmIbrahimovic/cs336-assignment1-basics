@@ -234,8 +234,3 @@ class Tokenizer:
         token_list = [self.vocab[id] for id in ids]
         all_bytes = b"".join(token_list)
         return all_bytes.decode('utf-8', errors='replace')
-
-# if __name__ == '__main__':
-#     tokenizer = Tokenizer()
-#     vocab, merges = tokenizer.tokenize("testfile.txt", 260, [])
-#     print(merges)
