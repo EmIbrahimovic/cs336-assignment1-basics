@@ -286,7 +286,7 @@ class CausalMultiHeadedSelfAttention(nn.Module):
         Performs a forward pass of _causal_ multi-headed self attention with the given input.
         Returns a tensor of dimension "... seq_len d_v" // d_model
         """
-        mask = torch.tril(torch.ones(x.shape[-2], x.shape[-2], device=x.device, dtype=bool))
+        mask = torch.tril(torch.ones(x.shape[-2], x.shape[-2], device=x.device, dtype=torch.bool))
 
         Q = rearrange(self.q_proj(x), "... seq_len (h d_k) -> ... h seq_len d_k", h=self.num_heads)
         K = rearrange(self.k_proj(x), "... seq_len (h d_k) -> ... h seq_len d_k", h=self.num_heads)

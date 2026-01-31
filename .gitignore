@@ -165,3 +165,9 @@ cython_debug/
 /data/owt_valid.txt
 /data/TinyStoriesV2-GPT4-train.txt
 /data/TinyStoriesV2-GPT4-valid.txt
+/cs336_basics/wandb
+/wandb
+/cs336_basics/small_guy_checkpoints/*
+
+data/TinyStoriesV2-GPT4-train_50k.txt
+data/tok_TinyStoriesV2-GPT4-train_50k.npy

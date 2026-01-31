@@ -143,7 +143,7 @@ def print_optimizer_memory():
 
 
 def print_gpt_2_mem():
-    params = gpt2_params['XL']
+    params = gpt2_params['small']
     print(f"Number of parameters: \t{(num_parameters.subs(params))}")
     print(f"Number of activations: \t{(num_activations.subs(params))}")
     print(f"Number of gradients: \t{(num_gradients.subs(params))}")
@@ -155,5 +155,6 @@ def print_gpt_2_mem():
     max_batch_size = sp.solvers.solve(total_opt_mem.subs(params) * 2 - 80*10**9, batch_size)
     print(f"{max_batch_size=}")
 
+print_gpt_2_mem()
 
 # print_flops()

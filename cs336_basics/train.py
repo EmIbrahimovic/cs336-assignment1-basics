@@ -104,7 +104,7 @@ def train(model_args: dict[str, Any],
           checkpoint_args: dict[str, Any]):
 
     # TODO: warning, default context length and learning rate must be the same in here and the get from args methods
-    model_name = model_args.get('name', 'default_model' + str(datetime.datetime.now()))
+    model_name = model_args.get('name', 'model_' + str(datetime.datetime.now()))
     batch_size = model_args.get('batch_size', 8)
     context_length = model_args.get('context_length', 250)
     learning_rate = optimizer_args.get('learning_rate', 1e-4)
@@ -124,8 +124,11 @@ def train(model_args: dict[str, Any],
     steps_per_period = num_steps//num_periods
     start_time = time.time()
     for period in range(num_periods):
-        for step in tqdm(range(steps_per_period), 
-                         desc=f"Period {period + 1}/{num_periods} - [{period*steps_per_period + 1}, {(period+1)*steps_per_period}]/{num_steps}"):
+        start_step = period*steps_per_period + 1
+        end_step = (period+1)*steps_per_period
+
+        for step in tqdm(range(start_step, end_step + 1), 
+                         desc=f"Period {period + 1}/{num_periods} - [{start_step}, {end_step}]/{num_steps}"):
             
             inputs, targets = data_loader(trainset, batch_size, context_length, device=device)
             current_lr = learning_rate # learning_rate_schedule(step, alpha_min=0, alpha_max=0.1, Tc=10, Tw=80)
@@ -140,14 +143,14 @@ def train(model_args: dict[str, Any],
 
             optimizer.step()
 
-            if (period * steps_per_period + step + 1) % checkpoint_rate == 0:
-                print("   Step {step + 1}, saving checkpoint...")
+            if step % checkpoint_rate == 0:
+                print(f"   Step {step}, saving checkpoint...")
                 save_path = os.path.join(checkpoint_path, model_name + f"_{step}.pt")
                 save_checkpoint(model, optimizer, step, out=save_path)
 
             run.log({"loss": loss.item(), "learning rate": current_lr, "clock_time": time.time() - start_time})
 
-        print(f"Step {(period+1)*steps_per_period}/{num_steps} ~ Loss {loss.item():.4f} - LR: {current_lr:.2f} - Time: {time.time() - start_time}")
+        print(f"Step {end_step}/{num_steps} ~ Loss {loss.item():.4f} - LR: {current_lr:.2f} - Time: {time.time() - start_time}")
 
     save_checkpoint(model, optimizer, step, out=os.path.join(checkpoint_path, model_name + f"_final.pt"))
 
@@ -163,24 +166,28 @@ def decode(model: nn.Module,
            user_input: Float[Tensor, "seq_len"],
            max_tokens: Optional[int]=None,
            temperature: float=1,
-           p_threshold: int=0) -> Float[Tensor, "output_seq_len"]:
+           p_threshold: float=0) -> Float[Tensor, "output_seq_len"]:
 
     next_token = None
 
     next_input = user_input
     while next_token != eot_token and not (max_tokens is not None and next_input.shape[0] >= max_tokens):
-        logits = model(next_input)
+        all_logits = model(next_input)
+        logits = all_logits[-1].detach()
 
         q = softmax(logits/temperature, dim=-1)
         q_sorted = q.sort(descending=True)
         q_summed = q.cumsum(dim=-1)
         q_masked = torch.where(q_summed <= p_threshold, q_sorted.values, 0)
+        if q_summed[0] >= p_threshold:
+            q_masked[0] = q_sorted.values[0]
 
-        p = q_masked / (q_masked.sum())
+        q_masked = q_masked.numpy()
+        p = q_masked / q_masked.sum()
 
         next_token = np.random.choice(q_sorted.indices, p=p)
 
-        next_input = torch.cat([next_input, torch.Tensor([next_token])])
+        next_input = torch.cat([next_input, torch.tensor([next_token], dtype=torch.int)])
 
     return next_input
 
@@ -218,22 +225,22 @@ def small_test():
         vocab, merges = train_bpt_tokenizer(shortened_train_file, vocab_size, [eot_token])
         tokenizer = Tokenizer(vocab, merges, [eot_token])
 
-    num_steps = 1000
+    num_steps = 8000
     model_args = {
-        'name': 'small_guy',
+        'name': 'small_guy_bigger',
         'vocab_size': vocab_size,
         'batch_size': 8,
         'context_length': 250,
         'num_layers': 2,
         'd_model': 128,
-        'num_heads': 4,
+        'num_heads': 8,
         'rope_theta': 10000,
         'd_ff': 4 * 128
     }
 
     from_checkpoint = True
     checkpoint_path = "./small_guy_checkpoints/"
-    checkpoint_rate = num_steps//4
+    checkpoint_rate = 2000
     if not from_checkpoint:
         model = train(
             model_args, 
@@ -252,15 +259,20 @@ def small_test():
         load_checkpoint(os.path.join(checkpoint_path, model_args['name'] + f"_final.pt"), model, optimizer)
 
     prompt = "Ben is a good boy. Ben likes to eat ice cream. "
-    encoded_prompt = torch.Tensor(tokenizer.encode(prompt))
+    encoded_prompt = torch.tensor(tokenizer.encode(prompt), dtype=torch.int)
 
-    encoded_output = decode(model, tokenizer.encode(eot_token)[0], encoded_prompt, 250)
+    encoded_output = decode(
+        model, 
+        tokenizer.encode(eot_token)[0], 
+        encoded_prompt, 
+        250,
+        temperature=0.8,
+        p_threshold=1e-4)
     words = tokenizer.decode(encoded_output.tolist())
 
     return words
-    
-
 
 if __name__ == "__main__":
-    small_test()
+    words = small_test()
+    print(words)
     # raise SystemExit(main())
