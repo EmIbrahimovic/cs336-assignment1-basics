@@ -182,10 +182,7 @@ def decode(model: nn.Module,
         if q_summed[0] >= p_threshold:
             q_masked[0] = q_sorted.values[0]
 
-        q_masked = q_masked.numpy()
-        p = q_masked / q_masked.sum()
-
-        next_token = np.random.choice(q_sorted.indices, p=p)
+        next_token = q_sorted.indices[torch.multinomial(q_masked, num_samples=1)].item()
 
         next_input = torch.cat([next_input, torch.tensor([next_token], dtype=torch.int)])
 
@@ -211,6 +208,9 @@ def set_up_small_test_file(train_file, shortened_train_file, tokenized_short_fil
 
 
 def small_test():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     train_file = '../data/TinyStoriesV2-GPT4-train.txt'
     shortened_train_file = '../data/TinyStoriesV2-GPT4-train_50k.txt'
     tokenized_short_file = '../data/tok_TinyStoriesV2-GPT4-train_50k.npy'
@@ -247,14 +247,14 @@ def small_test():
             {},
             tokenized_short_file,
             num_steps,
-            'cpu',
+            device,
             'emibrahimovic-mit',
-            'first-test',
+            'runpod-first-test',
             {"path": checkpoint_path,
              "rate": checkpoint_rate}
         )
     else:
-        model = _get_model_from_args(model_args, 'cpu')
+        model = _get_model_from_args(model_args, device)
         optimizer = _get_optimizer_from_args(model, {})
         load_checkpoint(os.path.join(checkpoint_path, model_args['name'] + f"_final.pt"), model, optimizer)
 
@@ -272,7 +272,137 @@ def small_test():
 
     return words
 
+def tokenize_large_file_memmap(input_file, output_file, tokenizer, chunk_size=10_000_000):
+    """
+    Tokenize directly to memory-mapped file - constant memory usage.
+    """
+    # First pass: count exact tokens needed
+    print("Counting tokens...")
+    total_tokens = 0
+    
+    with open(input_file, 'r', encoding='utf-8') as f:
+        pbar = tqdm(desc="Counting", unit=' chars')
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            total_tokens += len(tokenizer.encode(chunk))
+            pbar.update(len(chunk))
+        pbar.close()
+    
+    print(f"Total tokens: {total_tokens:,}")
+    
+    # Create memory-mapped array (writes directly to disk)
+    tokens_mmap = np.lib.format.open_memmap(
+        output_file,
+        mode='w+',
+        dtype=np.uint16,  # or np.uint32 if vocab_size > 65536
+        shape=(total_tokens,)
+    )
+    
+    # Second pass: tokenize and write directly to mmap
+    print("Tokenizing to disk...")
+    offset = 0
+    
+    with open(input_file, 'r', encoding='utf-8') as f:
+        pbar = tqdm(total=total_tokens, unit=' tokens')
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            
+            chunk_tokens = np.array(tokenizer.encode(chunk), dtype=np.uint16)
+            chunk_len = len(chunk_tokens)
+            tokens_mmap[offset:offset + chunk_len] = chunk_tokens
+            offset += chunk_len
+            pbar.update(chunk_len)
+        pbar.close()
+    
+    # Flush to ensure everything is written
+    tokens_mmap.flush()
+    print(f"Saved to {output_file}")
+
+
+def experiment1():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    train_file = '../data/TinyStoriesV2-GPT4-train.txt'
+    tokenized_file = '../data/tok_TinyStoriesV2-GPT4-train_50k.npy'
+
+    vocab_size = 10000
+    eot_token = "<|endoftext|>"
+    vocab, merges = train_bpt_tokenizer(train_file, vocab_size, [eot_token])
+    tokenizer = Tokenizer(vocab, merges, [eot_token])
+    
+    file_setup_necessary = True
+    if file_setup_necessary:
+        tokenize_large_file_memmap(train_file, tokenized_file, tokenizer)
+
+    num_steps = 8000
+
+    semi_big_model_args = {
+        'name': 'semi_big_guy',
+        'vocab_size': vocab_size,
+        'batch_size': 8,
+        'context_length': 256,
+        'num_layers': 2,
+        'd_model': 512,
+        'num_heads': 16,
+        'rope_theta': 10000,
+        'd_ff': 1344
+    }
+    
+    from_checkpoint = True
+    checkpoint_path = "./semi_big_guy_checkpoints/"
+    checkpoint_rate = num_steps // 8
+    if not from_checkpoint:
+        model = train(
+            model_args, 
+            {},
+            tokenized_short_file,
+            num_steps,
+            device,
+            'emibrahimovic-mit',
+            'runpod-first-test',
+            {"path": checkpoint_path,
+             "rate": checkpoint_rate}
+        )
+    else:
+        model = _get_model_from_args(model_args, device)
+        optimizer = _get_optimizer_from_args(model, {})
+        load_checkpoint(os.path.join(checkpoint_path, model_args['name'] + f"_final.pt"), model, optimizer)
+
+    prompt = "Ben is a good boy. Ben likes to eat ice cream. "
+    encoded_prompt = torch.tensor(tokenizer.encode(prompt), dtype=torch.int)
+
+    encoded_output = decode(
+        model, 
+        tokenizer.encode(eot_token)[0], 
+        encoded_prompt, 
+        256,
+        temperature=0.8,
+        p_threshold=1e-4)
+    words = tokenizer.decode(encoded_output.tolist())
+
+    return words
+
+
 if __name__ == "__main__":
-    words = small_test()
-    print(words)
     # raise SystemExit(main())
+
+    # Check CUDA availability
+    if torch.cuda.is_available():
+        print("CUDA is available.")
+        print(f"GPU count: {torch.cuda.device_count()}")
+        print(f"GPU name: {torch.cuda.get_device_name(0)}")
+    else:
+        print("CUDA not available, using CPU.")
+
+    # Select device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    words = experiment1()
+    print(words)
+
+
